@@ -6,7 +6,7 @@
 先在面板中创建节点并记住节点的id，执行脚本按提示选择1（webapi对接）或2（数据库对接）
 然后输入相应的参数，回车执行，等待脚本安装完成重启vps后即可成功。
 支持aws，centos7，
-
+```
 外壳
 yum -y安装wget &&
 wget -N --no-check-certificate https://raw.githubusercontent.com/Tyrant-2017/ss-panel-v3-mod-node-connect/master/ss-panel-v3-mod-node-connect.sh &&
