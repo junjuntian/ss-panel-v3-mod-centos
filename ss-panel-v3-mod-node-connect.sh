@@ -4,6 +4,22 @@
 
 APT_IPV4="-o Acquire::ForceIPv4=true"
 
+clone_shadowsocks_repo(){
+	rm -rf /root/shadowsocks
+	git clone -b manyuser https://github.com/Tyrant-2017/shadowsocks.git "/root/shadowsocks" && return 0
+	git clone -b master https://github.com/Tyrant-2017/shadowsocks.git "/root/shadowsocks" && return 0
+	echo "Error: shadowsocks 仓库克隆失败，请检查网络后重试。"
+	return 1
+}
+
+ensure_shadowsocks_ready(){
+	if [ ! -f /root/shadowsocks/server.py ]; then
+		echo "Error: /root/shadowsocks/server.py 不存在，安装中止。"
+		exit 1
+	fi
+	cd /root/shadowsocks || exit 1
+}
+
 enable_legacy_provider(){
 	if openssl version 2>/dev/null | grep -q "OpenSSL 3"; then
 		cat > /etc/ssl/openssl-legacy.cnf <<'EOF'
@@ -43,6 +59,34 @@ enable_bbr(){
 	grep -q "net.core.default_qdisc=fq" /etc/sysctl.conf || echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
 	grep -q "net.ipv4.tcp_congestion_control=bbr" /etc/sysctl.conf || echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
 	sysctl -p >/dev/null 2>&1
+}
+
+configure_startup_and_firewall(){
+	iptables -F
+	iptables -X
+	iptables -I INPUT -p tcp -m tcp --dport 22:65535 -j ACCEPT
+	iptables -I INPUT -p udp -m udp --dport 22:65535 -j ACCEPT
+
+	if [[ ${release} = "centos" ]]; then
+		mkdir -p /etc/sysconfig
+		iptables-save > /etc/sysconfig/iptables
+		echo 'iptables-restore /etc/sysconfig/iptables' >> /etc/rc.local
+		echo "/usr/bin/supervisord -c /etc/supervisord.conf" >> /etc/rc.local
+		chmod +x /etc/rc.d/rc.local
+	else
+		mkdir -p /etc/iptables
+		iptables-save > /etc/iptables/rules.v4
+		if command -v netfilter-persistent >/dev/null 2>&1; then
+			netfilter-persistent save
+		fi
+		cat > /etc/rc.local <<'EOF'
+#!/bin/sh -e
+iptables-restore < /etc/iptables/rules.v4
+/usr/bin/supervisord -c /etc/supervisord.conf
+exit 0
+EOF
+		chmod +x /etc/rc.local
+	fi
 }
 
 config_supervisor_runtime(){
@@ -151,8 +195,8 @@ install_centos_ssr(){
 	./configure && make -j2 && make install
 	echo /usr/local/lib > /etc/ld.so.conf.d/usr_local_lib.conf
 	ldconfig
-	git clone -b manyuser https://github.com/Tyrant-2017/shadowsocks.git "/root/shadowsocks"
-	cd /root/shadowsocks
+	clone_shadowsocks_repo || exit 1
+	ensure_shadowsocks_ready
 	chkconfig supervisord on
 	#第一次安装
 	python_test
@@ -198,9 +242,8 @@ install_ubuntu_ssr(){
 	ldconfig
 	python3 -m pip install --upgrade pip setuptools wheel
 	python3 -m pip install cymysql
-	cd /root
-	git clone -b master https://github.com/Tyrant-2017/shadowsocks.git "/root/shadowsocks"
-	cd shadowsocks
+	clone_shadowsocks_repo || exit 1
+	ensure_shadowsocks_ready
 	patch_python310_compat
 	enable_legacy_provider
 	OPENSSL_CONF=/etc/ssl/openssl-legacy.cnf python3 -m pip install -r requirements.txt
@@ -270,15 +313,7 @@ install_node(){
 	config_supervisor_runtime
 	supervisord
 	#iptables
-	iptables -F
-	iptables -X  
-	iptables -I INPUT -p tcp -m tcp --dport 22:65535 -j ACCEPT
-	iptables -I INPUT -p udp -m udp --dport 22:65535 -j ACCEPT
-	iptables-save >/etc/sysconfig/iptables
-	iptables-save >/etc/sysconfig/iptables
-	echo 'iptables-restore /etc/sysconfig/iptables' >> /etc/rc.local
-	echo "/usr/bin/supervisord -c /etc/supervisord.conf" >> /etc/rc.local
-	chmod +x /etc/rc.d/rc.local
+	configure_startup_and_firewall
 	echo "#######################################################################"
 	echo "# 安装完成，节点即将重启使配置生效                                    #"
 	echo "# Github: https://github.com/Tyrant-2017/ss-panel-v3-mod-node-connect #"
@@ -356,15 +391,7 @@ install_node_db(){
 	config_supervisor_runtime
 	supervisord
 	#iptables
-	iptables -F
-	iptables -X  
-	iptables -I INPUT -p tcp -m tcp --dport 22:65535 -j ACCEPT
-	iptables -I INPUT -p udp -m udp --dport 22:65535 -j ACCEPT
-	iptables-save >/etc/sysconfig/iptables
-	iptables-save >/etc/sysconfig/iptables
-	echo 'iptables-restore /etc/sysconfig/iptables' >> /etc/rc.local
-	echo "/usr/bin/supervisord -c /etc/supervisord.conf" >> /etc/rc.local
-	chmod +x /etc/rc.d/rc.local
+	configure_startup_and_firewall
 	echo "#######################################################################"
 	echo "# 安装完成，节点即将重启使配置生效                                    #"
 	echo "# Github: https://github.com/Tyrant-2017/ss-panel-v3-mod-node-connect #"
