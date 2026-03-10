@@ -4,6 +4,22 @@
 
 APT_IPV4="-o Acquire::ForceIPv4=true"
 
+clone_shadowsocks_repo(){
+	rm -rf /root/shadowsocks
+	git clone -b manyuser https://github.com/Tyrant-2017/shadowsocks.git "/root/shadowsocks" && return 0
+	git clone -b master https://github.com/Tyrant-2017/shadowsocks.git "/root/shadowsocks" && return 0
+	echo "Error: shadowsocks 仓库克隆失败，请检查网络后重试。"
+	return 1
+}
+
+ensure_shadowsocks_ready(){
+	if [ ! -f /root/shadowsocks/server.py ]; then
+		echo "Error: /root/shadowsocks/server.py 不存在，安装中止。"
+		exit 1
+	fi
+	cd /root/shadowsocks || exit 1
+}
+
 enable_legacy_provider(){
 	if openssl version 2>/dev/null | grep -q "OpenSSL 3"; then
 		cat > /etc/ssl/openssl-legacy.cnf <<'EOF'
@@ -179,8 +195,8 @@ install_centos_ssr(){
 	./configure && make -j2 && make install
 	echo /usr/local/lib > /etc/ld.so.conf.d/usr_local_lib.conf
 	ldconfig
-	git clone -b manyuser https://github.com/Tyrant-2017/shadowsocks.git "/root/shadowsocks"
-	cd /root/shadowsocks
+	clone_shadowsocks_repo || exit 1
+	ensure_shadowsocks_ready
 	chkconfig supervisord on
 	#第一次安装
 	python_test
@@ -226,9 +242,8 @@ install_ubuntu_ssr(){
 	ldconfig
 	python3 -m pip install --upgrade pip setuptools wheel
 	python3 -m pip install cymysql
-	cd /root
-	git clone -b master https://github.com/Tyrant-2017/shadowsocks.git "/root/shadowsocks"
-	cd shadowsocks
+	clone_shadowsocks_repo || exit 1
+	ensure_shadowsocks_ready
 	patch_python310_compat
 	enable_legacy_provider
 	OPENSSL_CONF=/etc/ssl/openssl-legacy.cnf python3 -m pip install -r requirements.txt
