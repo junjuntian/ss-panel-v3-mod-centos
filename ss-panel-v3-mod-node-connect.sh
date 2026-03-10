@@ -1,6 +1,61 @@
 #!/bin/bash
 #Check Root
 [ $(id -u) != "0" ] && { echo "Error: 必须使用root用户执行此脚本！"; exit 1; }
+
+APT_IPV4="-o Acquire::ForceIPv4=true"
+
+enable_legacy_provider(){
+	if openssl version 2>/dev/null | grep -q "OpenSSL 3"; then
+		cat > /etc/ssl/openssl-legacy.cnf <<'EOF'
+openssl_conf = openssl_init
+
+[openssl_init]
+providers = provider_sect
+
+[provider_sect]
+default = default_sect
+legacy = legacy_sect
+
+[default_sect]
+activate = 1
+
+[legacy_sect]
+activate = 1
+EOF
+		echo 'export OPENSSL_CONF=/etc/ssl/openssl-legacy.cnf' > /etc/profile.d/openssl_legacy.sh
+		chmod +x /etc/profile.d/openssl_legacy.sh
+	fi
+}
+
+patch_python310_compat(){
+	local target_file="/root/shadowsocks/shadowsocks/lru_cache.py"
+	if [ -f "$target_file" ]; then
+		sed -i "s/from collections import MutableMapping/from collections.abc import MutableMapping/" "$target_file"
+	fi
+	local target_encrypt="/root/shadowsocks/shadowsocks/encrypt.py"
+	if [ -f "$target_encrypt" ]; then
+		sed -i "s/collections.MutableMapping/collections.abc.MutableMapping/g" "$target_encrypt"
+	fi
+}
+
+enable_bbr(){
+	modprobe tcp_bbr >/dev/null 2>&1
+	grep -q "net.core.default_qdisc=fq" /etc/sysctl.conf || echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
+	grep -q "net.ipv4.tcp_congestion_control=bbr" /etc/sysctl.conf || echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
+	sysctl -p >/dev/null 2>&1
+}
+
+config_supervisor_runtime(){
+	local py_bin="python"
+	if command -v python3 >/dev/null 2>&1; then
+		py_bin="python3"
+	fi
+	if [ -f /etc/supervisord.conf ]; then
+		sed -i "s#command = python #command = /usr/bin/env OPENSSL_CONF=/etc/ssl/openssl-legacy.cnf ${py_bin} #g" /etc/supervisord.conf
+		sed -i "s#command=python #command=/usr/bin/env OPENSSL_CONF=/etc/ssl/openssl-legacy.cnf ${py_bin} #g" /etc/supervisord.conf
+	fi
+}
+
 Libtest(){
 	#自动选择下载节点
 	GIT='raw.githubusercontent.com'
@@ -19,11 +74,9 @@ Libtest(){
 }
 Get_Dist_Version()
 {
-    if [ -s /usr/bin/python3 ]; then
-        Version=`/usr/bin/python3 -c 'import platform; print(platform.linux_distribution()[1][0])'`
-    elif [ -s /usr/bin/python2 ]; then
-        Version=`/usr/bin/python2 -c 'import platform; print platform.linux_distribution()[1][0]'`
-    fi
+	if [ -f /etc/os-release ]; then
+		Version=$(awk -F'=' '/^VERSION_ID=/{gsub(/"/,"",$2);print $2}' /etc/os-release | cut -d. -f1)
+	fi
 }
 python_test(){
 	#测速决定使用哪个源
@@ -55,10 +108,10 @@ install_centos_ssr(){
 	cd /root
 	Get_Dist_Version
 	if [ $Version == "7" ]; then
-		wget --no-check-certificate https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm 
+		wget -4 --no-check-certificate https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm 
 		rpm -ivh epel-release-latest-7.noarch.rpm	
 	else
-		wget --no-check-certificate https://dl.fedoraproject.org/pub/epel/epel-release-latest-6.noarch.rpm
+		wget -4 --no-check-certificate https://dl.fedoraproject.org/pub/epel/epel-release-latest-6.noarch.rpm
 		rpm -ivh epel-release-latest-6.noarch.rpm
 	fi
 	rm -rf *.rpm
@@ -132,22 +185,25 @@ install_centos_ssr(){
 	cp config.json user-config.json
 }
 install_ubuntu_ssr(){
-	apt-get update -y
-	apt-get install supervisor lsof -y
-	apt-get install build-essential wget -y
-	apt-get install iptables git -y
+	apt-get ${APT_IPV4} update -y
+	apt-get ${APT_IPV4} install supervisor lsof -y
+	apt-get ${APT_IPV4} install build-essential wget -y
+	apt-get ${APT_IPV4} install iptables git curl -y
+	apt-get ${APT_IPV4} install python3 python3-pip python3-dev python3-setuptools python3-wheel -y
 	Libtest
-	wget --no-check-certificate $libAddr
+	wget -4 --no-check-certificate $libAddr
 	tar xf libsodium-1.0.13.tar.gz && cd libsodium-1.0.13
 	./configure && make -j2 && make install
 	echo /usr/local/lib > /etc/ld.so.conf.d/usr_local_lib.conf
 	ldconfig
-	apt-get install python-pip git -y
-	pip install cymysql
+	python3 -m pip install --upgrade pip setuptools wheel
+	python3 -m pip install cymysql
 	cd /root
 	git clone -b master https://github.com/Tyrant-2017/shadowsocks.git "/root/shadowsocks"
 	cd shadowsocks
-	pip install -r requirements.txt
+	patch_python310_compat
+	enable_legacy_provider
+	OPENSSL_CONF=/etc/ssl/openssl-legacy.cnf python3 -m pip install -r requirements.txt
 	chmod +x *.sh
 	# 配置程序
 	cp apiconfig.py userapiconfig.py
@@ -210,7 +266,8 @@ install_node(){
 	# 启用supervisord
 	supervisorctl shutdown
 	#某些机器没有echo_supervisord_conf 
-	wget -N -P  /etc/ --no-check-certificate  https://raw.githubusercontent.com/Tyrant-2017/ss-panel-v3-mod-node-connect/master/supervisord.conf
+	wget -4 -N -P  /etc/ --no-check-certificate  https://raw.githubusercontent.com/Tyrant-2017/ss-panel-v3-mod-node-connect/master/supervisord.conf
+	config_supervisor_runtime
 	supervisord
 	#iptables
 	iptables -F
@@ -228,6 +285,7 @@ install_node(){
 	echo "# Author: Tyrant                                                    	#"
 	echo "# blog: https://tyrant.cc                                      		#"	
 	echo "#######################################################################"
+	enable_bbr
 	reboot now
 }
 install_node_db(){
@@ -294,7 +352,8 @@ install_node_db(){
 	# 启用supervisord
 	supervisorctl shutdown
 	#某些机器没有echo_supervisord_conf 
-	wget -N -P  /etc/ --no-check-certificate  https://raw.githubusercontent.com/Tyrant-2017/ss-panel-v3-mod-node-connect/master/supervisord.conf
+	wget -4 -N -P  /etc/ --no-check-certificate  https://raw.githubusercontent.com/Tyrant-2017/ss-panel-v3-mod-node-connect/master/supervisord.conf
+	config_supervisor_runtime
 	supervisord
 	#iptables
 	iptables -F
@@ -312,6 +371,7 @@ install_node_db(){
 	echo "# Author: Tyrant                                                    	#"
 	echo "# blog: https://tyrant.cc                                      		#"
 	echo "#######################################################################"
+	enable_bbr
 	reboot now
 }
 echo
